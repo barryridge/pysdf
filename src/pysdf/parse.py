@@ -24,7 +24,7 @@ if mesh_path_env_name in os.environ:
   catkin_ws_path = os.environ[mesh_path_env_name]
 else:
   catkin_ws_path = os.path.expanduser('~') + '/catkin_ws/src/'
-supported_sdf_versions = [1.4, 1.5, 1.6]
+supported_sdf_versions = [1.4, 1.5, 1.6, 1.7]
 
 catkin_ws_path_exists = os.path.exists(catkin_ws_path)
 
@@ -133,14 +133,18 @@ def indent(string, spaces):
   return string.replace('\n', '\n' + ' ' * spaces).strip()
 
 
-def model_from_include(parent, include_node):
+def model_from_include(parent, include_node, ignore_submodels=[]):
     submodel_uri = get_tag(include_node, 'uri')
     submodel_uri = submodel_uri.replace('model://', '')
+    if submodel_uri in ignore_submodels:
+      return "ignored"
     submodel_path = find_model_in_gazebo_dir(submodel_uri)
     if not submodel_path:
       print('Failed to find included model (URI: %s)' % submodel_uri)
       return
     submodel_name = get_tag(include_node, 'name')
+    if submodel_name in ignore_submodels:
+      return "ignored"
     submodel_pose = get_tag_pose(include_node)
     return Model(parent, name=submodel_name, pose=submodel_pose, file=submodel_path)
 
@@ -157,6 +161,10 @@ def homogeneous_times_vector(homogeneous, vector):
 
 class SDF(object):
   def __init__(self, **kwargs):
+    if 'ignore_submodels' in kwargs:
+      self.ignore_submodels = kwargs['ignore_submodels']
+    else:
+      self.ignore_submodels = []
     self.world = World()
     if 'file' in kwargs:
       self.from_file(kwargs['file'])
@@ -177,7 +185,7 @@ class SDF(object):
     if not self.version in supported_sdf_versions:
       print('Unsupported SDF version in %s. Aborting.\n' % filename)
       return
-    self.world.from_tree(root, version=self.version)
+    self.world.from_tree(root, version=self.version, ignore_submodels=self.ignore_submodels)
 
 
   def from_model(self, modelname):
@@ -195,20 +203,24 @@ class World(object):
     self.models = []
     self.lights = []
     self.version = kwargs.get('version', 0.0)
+    self.ignore_submodels = []
 
 
   def from_tree(self, node, **kwargs):
+    if 'ignore_submodels' in kwargs:
+      self.ignore_submodels = kwargs['ignore_submodels']
     self.version = kwargs.get('version', self.version)
     if node.findall('world'):
       node = node.findall('world')[0]
       for include_node in node.findall('include'):
-        included_model = model_from_include(None, include_node)
+        included_model = model_from_include(None, include_node, ignore_submodels=self.ignore_submodels)
         if not included_model:
           print('Failed to include model, see previous errors. Aborting.')
           sys.exit(1)
-        self.models.append(included_model)
+        elif included_model != "ignored":
+          self.models.append(included_model)
       # TODO lights
-    self.models += [Model(tree=model_node, version=self.version) for model_node in node.findall('model')]
+    self.models += [Model(tree=model_node, version=self.version, ignore_submodels=self.ignore_submodels) for model_node in node.findall('model')]
 
 
   def plot_to_file(self, plot_filename, prefix=''):
@@ -281,6 +293,9 @@ class Model(SpatialEntity):
     self.links = []
     self.joints = []
     self.root_link = None
+    self.ignore_submodels = []
+    if 'ignore_submodels' in kwargs:
+      self.ignore_submodels = kwargs['ignore_submodels']
     if 'tree' in kwargs:
       self.from_tree(kwargs['tree'], **kwargs)
     elif 'file' in kwargs:
@@ -337,6 +352,8 @@ class Model(SpatialEntity):
 
 
   def from_tree(self, node, **kwargs):
+    if 'ignore_submodels' in kwargs:
+      self.ignore_submodels = kwargs['ignore_submodels']
     if node == None:
       return
     if node.tag != 'model':
@@ -348,7 +365,7 @@ class Model(SpatialEntity):
     self.joints = [Joint(self, tree=joint_node) for joint_node in node.findall('joint')]
 
     for include_node in node.findall('include'):
-      included_submodel = model_from_include(self, include_node)
+      included_submodel = model_from_include(self, include_node, ignore_submodels=self.ignore_submodels)
       if not included_submodel:
         print('Failed to include model, see previous errors. Aborting.')
         sys.exit(1)
